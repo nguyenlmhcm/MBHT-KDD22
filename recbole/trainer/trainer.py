@@ -227,7 +227,7 @@ class Trainer(AbstractTrainer):
         """
         resume_file = str(resume_file)
         self.saved_model_file = resume_file
-        checkpoint = torch.load(resume_file)
+        checkpoint = torch.load(resume_file, weights_only=False)  # ENV-COMPAT: PyTorch 2.6 default flip; self-generated checkpoint, trusted
         self.start_epoch = checkpoint['epoch'] + 1
         self.cur_step = checkpoint['cur_step']
         self.best_valid_score = checkpoint['best_valid_score']
@@ -473,7 +473,7 @@ class Trainer(AbstractTrainer):
                 checkpoint_file = model_file
             else:
                 checkpoint_file = self.saved_model_file
-            checkpoint = torch.load(checkpoint_file)
+            checkpoint = torch.load(checkpoint_file, weights_only=False)  # ENV-COMPAT: PyTorch 2.6 default flip; self-generated checkpoint, trusted
             self.model.load_state_dict(checkpoint['state_dict'])
             self.model.load_other_parameter(checkpoint.get('other_parameter'))
             message_output = 'Loading model structure and parameters from {}'.format(checkpoint_file)
@@ -535,7 +535,7 @@ class Trainer(AbstractTrainer):
                 checkpoint_file = model_file
             else:
                 checkpoint_file = self.saved_model_file
-            checkpoint = torch.load(checkpoint_file)
+            checkpoint = torch.load(checkpoint_file, weights_only=False)  # ENV-COMPAT: PyTorch 2.6 default flip; self-generated checkpoint, trusted
             self.model.load_state_dict(checkpoint['state_dict'])
             self.model.load_other_parameter(checkpoint.get('other_parameter'))
             message_output = 'Loading model structure and parameters from {}'.format(checkpoint_file)
