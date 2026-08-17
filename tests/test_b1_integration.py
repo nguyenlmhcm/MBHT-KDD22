@@ -33,16 +33,23 @@ from recbole.model.transition_utils import transition_vocab_size  # noqa: E402
 SEED = 2020
 HIDDEN = 64
 
-# Parent-code defect, not ours: mbht.py allocates gating_bias with
-# torch.Tensor(...) -- uninitialised memory -- and the matching
-# nn.init.normal_ call is commented out, while every sibling parameter is
-# initialised. It is therefore seed-independent garbage that differs
-# between two builds of the SAME model at the SAME seed, so it must be
-# controlled for before any bit-exactness claim. Measured on this machine:
-# absmax ranged from 2.3e-10 to 0.12 across builds, moving the forward
-# output by up to 3.2e-05; a bare torch.Tensor() has been observed
-# returning values as large as 1.7e+28.
-UNINITIALISED_PARENT_PARAMS = frozenset({'gating_bias'})
+# Last commit before B1 landed. Pinned rather than HEAD so these tests keep
+# comparing against the real pre-B1 model as the branch moves on.
+PRE_B1_COMMIT = '126a50c'
+
+# The pre-B1 source carries a defect that has since been fixed: gating_bias
+# was allocated with torch.Tensor(...) -- uninitialised memory -- with its
+# nn.init.normal_ call commented out, while every sibling parameter was
+# initialised. It was therefore seed-independent garbage, differing between
+# two builds of the SAME model at the SAME seed (measured: absmax 2.3e-10 to
+# 0.12, moving forward output by up to 3.2e-05; a bare torch.Tensor() has
+# been seen returning 1.7e+28). The same one-line fix is applied to the
+# extracted reference below, so the comparison isolates "B1 adds nothing
+# when off" from that unrelated fix, and needs no exclusions.
+GATING_BIAS_FIX = (
+    '# nn.init.normal_(self.gating_bias, std=0.02)',
+    'nn.init.normal_(self.gating_bias, std=0.02)',
+)
 # The multi-scale branch hardcodes a length of 200 (recbole/model/layers.py:
 # LinearAttention.E/F and MultiScaleAttention.out_fc), and pooling needs the
 # length divisible by scales[1] and scales[2]. MAX_ITEM_LIST_LENGTH is one
@@ -101,16 +108,28 @@ def tmall_type_ids():
 
 
 def load_pre_b1_mbht():
-    """Import the pre-B1 MBHT straight out of git as a separate module."""
+    """Import the pre-B1 MBHT straight out of git as a separate module.
+
+    The gating_bias init fix is applied to the extracted source so the only
+    remaining difference from the working tree is B1 itself.
+    """
     src = subprocess.run(
-        ['git', '-C', REPO, 'show', 'HEAD:recbole/model/sequential_recommender/mbht.py'],
+        ['git', '-C', REPO, 'show',
+         f'{PRE_B1_COMMIT}:recbole/model/sequential_recommender/mbht.py'],
         capture_output=True, text=True, check=True,
     ).stdout
     if 'transition' in src:
         raise AssertionError(
-            'HEAD already contains B1; point this at the pre-B1 commit, '
+            f'{PRE_B1_COMMIT} already contains B1; repoint PRE_B1_COMMIT, '
             'otherwise the comparison is vacuous'
         )
+    commented, uncommented = GATING_BIAS_FIX
+    if commented not in src:
+        raise AssertionError(
+            f'{PRE_B1_COMMIT} no longer has the commented-out gating_bias init; '
+            'GATING_BIAS_FIX is stale'
+        )
+    src = src.replace(commented, uncommented)
     tmp = tempfile.NamedTemporaryFile('w', suffix='_mbht_a0.py', delete=False)
     tmp.write(src)
     tmp.close()
@@ -144,37 +163,20 @@ def make_batch(model, n_types, batch_size=2):
     return item_seq, type_seq
 
 
-def state_dicts_equal(a, b, ignore=()):
+def state_dicts_equal(a, b):
     if a.keys() != b.keys():
         return False, f'key sets differ: {set(a) ^ set(b)}'
     for key in a:
-        if key in ignore:
-            continue
         if not torch.equal(a[key], b[key]):
             return False, f'tensor {key} differs'
     return True, ''
-
-
-def sync_uninitialised_params(src, dst):
-    """Copy the parent's uninitialised parameters so a comparison is meaningful.
-
-    Without this every forward comparison would be measuring the memory
-    allocator rather than the model.
-    """
-    src_sd = src.state_dict()
-    with torch.no_grad():
-        for name, param in dst.named_parameters():
-            if name in UNINITIALISED_PARENT_PARAMS:
-                param.copy_(src_sd[name])
 
 
 def test_flag_off_is_bitexact_with_pre_b1_model():
     a0 = build(load_pre_b1_mbht(), 5, 0, retail_type_ids())
     off = build(MBHT, 5, 0, retail_type_ids())
 
-    same, why = state_dicts_equal(
-        a0.state_dict(), off.state_dict(), ignore=UNINITIALISED_PARENT_PARAMS
-    )
+    same, why = state_dicts_equal(a0.state_dict(), off.state_dict())
     assert same, f'flag=off diverged from the pre-B1 model: {why}'
 
     n_a0 = sum(p.numel() for p in a0.parameters())
@@ -183,28 +185,47 @@ def test_flag_off_is_bitexact_with_pre_b1_model():
     assert off.transition_embedding is None
 
 
-def test_parent_gating_bias_is_uninitialised():
-    """Pin the parent defect, so the exclusion above stays justified.
+def test_a0_is_bitexact_across_same_seed_builds():
+    """The real reproducibility test, and the smoke test's criterion (3).
 
-    If MBHT ever initialises gating_bias, this fails and
-    UNINITIALISED_PARENT_PARAMS should shrink -- at which point A0 becomes
-    genuinely seed-reproducible.
+    Before the gating_bias init fix this failed: that parameter was
+    uninitialised memory, so the same seed gave different models and A0 was
+    never bit-exact. Every parameter must now be fully seed-determined.
     """
-    a0_cls = load_pre_b1_mbht()
-    seen = [build(a0_cls, 5, 0, retail_type_ids()).gating_bias.detach().clone()
+    for enable_b1 in (0, 1):
+        builds = [build(MBHT, 5, enable_b1, retail_type_ids()).state_dict()
+                  for _ in range(4)]
+        for i, other in enumerate(builds[1:], start=1):
+            same, why = state_dicts_equal(builds[0], other)
+            assert same, f'flag={enable_b1}: build 0 vs build {i} differ ({why})'
+
+    # and specifically the parameter that used to drift
+    seen = [build(MBHT, 5, 0, retail_type_ids()).gating_bias.detach().clone()
             for _ in range(8)]
-    assert any(not torch.equal(seen[0], other) for other in seen[1:]), (
-        'gating_bias no longer varies between same-seed builds; the parent may '
-        'have been fixed -- revisit UNINITIALISED_PARENT_PARAMS'
-    )
+    for i, other in enumerate(seen[1:], start=1):
+        assert torch.equal(seen[0], other), (
+            f'gating_bias still varies between same-seed builds (build {i}); '
+            'the init fix at mbht.py:100 may have been reverted'
+        )
+
+
+def test_a0_forward_is_bitexact_across_same_seed_builds():
+    item_seq, type_seq = make_batch(build(MBHT, 5, 0, retail_type_ids()), 5)
+    outs = []
+    for _ in range(3):
+        model = build(MBHT, 5, 0, retail_type_ids())
+        with torch.no_grad():
+            outs.append(model.forward(item_seq, type_seq))
+    for i, other in enumerate(outs[1:], start=1):
+        assert torch.equal(outs[0], other), (
+            f'A0 forward differs between same-seed builds (build {i}); '
+            f'max abs diff {(outs[0] - other).abs().max().item():.3e}'
+        )
 
 
 def test_flag_off_forward_matches_pre_b1_model():
     a0 = build(load_pre_b1_mbht(), 5, 0, retail_type_ids())
     off = build(MBHT, 5, 0, retail_type_ids())
-    # control the parent's uninitialised parameter, else this measures the
-    # allocator rather than B1
-    sync_uninitialised_params(a0, off)
 
     item_seq, type_seq = make_batch(off, 5)
     with torch.no_grad():
@@ -239,8 +260,6 @@ def test_flag_on_adds_exactly_the_transition_embedding():
 
         # every A0 parameter must be untouched by enabling the flag
         for key in sd_off:
-            if key in UNINITIALISED_PARENT_PARAMS:
-                continue  # parent-side garbage, varies regardless of the flag
             assert torch.equal(sd_off[key], sd_on[key]), (
                 f'{name}: enabling B1 perturbed {key}; the ablation would be confounded'
             )

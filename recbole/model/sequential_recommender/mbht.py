@@ -97,7 +97,7 @@ class MBHT(SequentialRecommender):
         self.attn = nn.Parameter(torch.Tensor(1, self.hidden_size))
         nn.init.normal_(self.attn, std=0.02)
         nn.init.normal_(self.attn_weights, std=0.02)
-        # nn.init.normal_(self.gating_bias, std=0.02)
+        nn.init.normal_(self.gating_bias, std=0.02)
         nn.init.normal_(self.gating_weight, std=0.02)
         nn.init.normal_(self.metric_w1, std=0.02)
         nn.init.normal_(self.metric_w2, std=0.02)
