@@ -397,7 +397,14 @@ class MBHT(SequentialRecommender):
         for batch_idx in range(seqs.shape[0]):
             seq = seqs[batch_idx]
             n_obj = n_objs[batch_idx]
-            seq = seq[:n_obj].cpu()
+            # ENV-COMPAT FIX (Gate 1, VPS audit): do not force `seq` to CPU here.
+            # `item_sim` (passed in from forward()) stays on the model's device (GPU),
+            # so `sim_items = seq[sim_items]` below indexes a CPU tensor with GPU
+            # indices and raises RuntimeError on current PyTorch/CUDA. Keeping `seq`
+            # on its original device keeps every downstream indexing op
+            # (sim_items, row_idx/masked_pos, H, metrics) device-consistent.
+            # No change to hypergraph construction logic/semantics.
+            seq = seq[:n_obj]
             seq_list = seq.tolist()
             unique = torch.unique(seq)
             unique = unique.tolist()
