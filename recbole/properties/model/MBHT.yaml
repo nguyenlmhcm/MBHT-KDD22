@@ -10,3 +10,6 @@ initializer_range: 0.02
 mask_ratio: 0.2
 loss_type: 'CE'
 customized_eval: 1
+
+# B1: learnable behaviour-transition embedding (see recbole/model/transition_utils.py)
+enable_transition_embedding: 0

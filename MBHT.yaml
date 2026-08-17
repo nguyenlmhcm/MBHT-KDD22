@@ -25,3 +25,7 @@ MAX_ITEM_LIST_LENGTH: 200
 train_batch_size: 32
 eval_batch_size: 32
 hyper_len: 6
+
+# B1: learnable behaviour-transition embedding. Off by default so that
+# the unmodified A0 baseline is what runs unless explicitly enabled.
+enable_transition_embedding: 0

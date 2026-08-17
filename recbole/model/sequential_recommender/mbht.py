@@ -11,6 +11,12 @@ from torch import nn
 import torch.nn.functional as F
 from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.layers import TransformerEncoder, HGNN
+from recbole.model.transition_utils import (
+    PAD_TRANSITION,
+    build_transition_seq,
+    transition_vocab_size,
+    validate_transition_inputs,
+)
 
 
 def sim(z1: torch.Tensor, z2: torch.Tensor):
@@ -112,6 +118,38 @@ class MBHT(SequentialRecommender):
             assert self.loss_type in ['BPR', 'CE']
         except AssertionError:
             raise AssertionError("Make sure 'loss_type' in ['BPR', 'CE']!")
+
+        # ---- B1: learnable behaviour-transition embedding -------------------
+        # Constructed LAST, and only when enabled. Both matter for a clean
+        # ablation: with the flag off nothing is built, so no extra RNG is
+        # drawn and A0 reproduces bit-for-bit at the same seed; and because
+        # every A0 module above has already drawn its own values, turning the
+        # flag on leaves their initialisation untouched too. A1 then differs
+        # from A0 by exactly this embedding, nothing else.
+        self.enable_transition_embedding = bool(config['enable_transition_embedding'])
+        # Derived, never hardcoded: RecBole assigns type ids by order of first
+        # appearance, so both the size and the meaning of each id vary by
+        # dataset (retail_beh -> 5 ids, tmall_beh/ijcai_beh -> 6).
+        self.n_behavior_types = len(dataset.field2token_id["item_type_list"])
+        self.n_transitions = transition_vocab_size(self.n_behavior_types)
+        if self.enable_transition_embedding:
+            # nn.Embedding draws its own initial weights, which would advance
+            # the global RNG and hand every A0 module a different draw during
+            # the self.apply() below -- A1 would then differ from A0 in far
+            # more than this embedding. Rewind so construction costs no
+            # randomness; self.apply() still initialises this module, and does
+            # so last, after every A0 module has taken its own values.
+            rng_state = torch.random.get_rng_state()
+            self.transition_embedding = nn.Embedding(
+                self.n_transitions, self.hidden_size, padding_idx=PAD_TRANSITION
+            )
+            torch.random.set_rng_state(rng_state)
+        else:
+            self.transition_embedding = None
+        # Range checking synchronises with the device, so it runs once rather
+        # than every step. An out-of-range type would not crash: it would
+        # silently alias onto another transition's slot.
+        self._transition_ids_checked = False
 
         # parameters initialization
         self.apply(self._init_weights)
@@ -226,6 +264,20 @@ class MBHT(SequentialRecommender):
         type_embedding = self.type_embedding(type_seq)
         item_emb = self.item_embedding(item_seq)
         input_emb = item_emb + position_embedding + type_embedding
+        if self.enable_transition_embedding:
+            # Policy (a): `type_seq` arrives already masked, so masked
+            # positions read as type 0 and the hidden behaviour never enters
+            # the transition. Feeding the pre-mask types here would leak the
+            # label being predicted.
+            # Masked items keep a non-zero mask token, so `item_seq > 0` marks
+            # them valid -- the same notion get_attention_mask() works from.
+            transition_seq = build_transition_seq(
+                type_seq, item_seq > 0, self.n_behavior_types
+            )
+            if not self._transition_ids_checked:
+                validate_transition_inputs(type_seq, transition_seq, self.n_behavior_types)
+                self._transition_ids_checked = True
+            input_emb = input_emb + self.transition_embedding(transition_seq)
         input_emb = self.LayerNorm(input_emb)
         input_emb = self.dropout(input_emb)
         extended_attention_mask = self.get_attention_mask(item_seq)
