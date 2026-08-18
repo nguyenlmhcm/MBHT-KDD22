@@ -1,0 +1,72 @@
+{
+  "_comment": [
+    "Locked BEFORE any multi-seed run, and committed so the lock is verifiable",
+    "from git history rather than asserted after the fact. Notebooks must read",
+    "the seed list from this file; a hardcoded list somewhere else is exactly",
+    "the hole this file exists to close.",
+    "",
+    "Never re-pick or extend these after seeing results. Choosing seeds once the",
+    "numbers are visible is cherry-picking whatever the intent was, and a",
+    "reviewer cannot distinguish the two.",
+    "",
+    "Extending the set is allowed only as a pre-declared phase 2: if phase 1",
+    "lands near the decision boundary, append to seeds_phase2 BEFORE running it,",
+    "commit that change, and report both phases together -- never phase 2 alone."
+  ],
+  "locked_at": "2026-08-18",
+  "locked_before_any_multiseed_run": true,
+
+  "seeds": [2020, 2021, 2022],
+  "seeds_phase2": [],
+  "applies_to": ["A0", "A1", "A2", "A3"],
+
+  "primary_metric": "ndcg@10",
+  "primary_metric_rationale": [
+    "Already the valid_metric MBHT selects checkpoints on, so nothing about the",
+    "training protocol changes.",
+    "Measured on RetailRocket, its run-to-run spread was 0.0010 against 0.0065",
+    "for recall@5 -- roughly 6.6x tighter. Deciding on recall@5 would need about",
+    "21 runs per arm at the same sensitivity, which is not affordable."
+  ],
+
+  "reporting": {
+    "statistic": "mean +- std over seeds, per arm",
+    "test": "Welch's two-sample t-test (unequal variances, two-sided)",
+    "test_rationale": [
+      "The dominant noise is CUDA nondeterminism in build_Gs_unique, not seed",
+      "choice, so two runs at the same seed still differ. Pairing by seed",
+      "therefore removes none of the variance and a paired test would overstate",
+      "its power. Treat the arms as independent samples.",
+      "Variances are not assumed equal: A1 carries an extra embedding and has no",
+      "reason to share A0's spread."
+    ],
+    "alpha": 0.05
+  },
+
+  "go_criterion": [
+    "BOTH must hold, decided on the primary metric:",
+    "1. mean(A1) - mean(A0) exceeds the run-to-run noise floor measured on the",
+    "   SAME dataset in this phase -- not the RetailRocket figure.",
+    "2. Welch's t-test p < 0.05.",
+    "Failing either is a real result, not a failed experiment: it says B1 does",
+    "not move this metric beyond what repeated runs of the unchanged model",
+    "already move it."
+  ],
+
+  "noise_floor": {
+    "_comment": [
+      "Filled in per dataset from that dataset's own phase-1 A0 runs. The",
+      "RetailRocket entry comes from n=2 and is good enough only for sizing the",
+      "seed count -- it must not be quoted in the paper, and must not be reused",
+      "as Tmall's floor."
+    ],
+    "retail_beh": {
+      "n_runs": 2,
+      "provisional": true,
+      "ndcg@10": 0.0010,
+      "recall@5": 0.0065,
+      "source": "build_Gs_unique: duplicate-index assignment (mbht.py:503) + tied topk on CUDA"
+    },
+    "tmall_beh": null
+  }
+}
