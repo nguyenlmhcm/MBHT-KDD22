@@ -15,11 +15,18 @@
   ],
   "locked_at": "2026-08-18",
   "locked_before_any_multiseed_run": true,
-
-  "seeds": [2020, 2021, 2022],
+  "seeds": [
+    2020,
+    2021,
+    2022
+  ],
   "seeds_phase2": [],
-  "applies_to": ["A0", "A1", "A2", "A3"],
-
+  "applies_to": [
+    "A0",
+    "A1",
+    "A2",
+    "A3"
+  ],
   "primary_metric": "ndcg@10",
   "primary_metric_rationale": [
     "Already the valid_metric MBHT selects checkpoints on, so nothing about the",
@@ -28,7 +35,6 @@
     "for recall@5 -- roughly 6.6x tighter. Deciding on recall@5 would need about",
     "21 runs per arm at the same sensitivity, which is not affordable."
   ],
-
   "reporting": {
     "statistic": "mean +- std over seeds, per arm",
     "test": "Welch's two-sample t-test (unequal variances, two-sided)",
@@ -42,7 +48,6 @@
     ],
     "alpha": 0.05
   },
-
   "go_criterion": [
     "BOTH must hold, decided on the primary metric:",
     "1. mean(A1) - mean(A0) exceeds the run-to-run noise floor measured on the",
@@ -52,7 +57,6 @@
     "not move this metric beyond what repeated runs of the unchanged model",
     "already move it."
   ],
-
   "noise_floor": {
     "_comment": [
       "Filled in per dataset from that dataset's own phase-1 A0 runs. The",
@@ -63,10 +67,42 @@
     "retail_beh": {
       "n_runs": 2,
       "provisional": true,
-      "ndcg@10": 0.0010,
+      "ndcg@10": 0.001,
       "recall@5": 0.0065,
       "source": "build_Gs_unique: duplicate-index assignment (mbht.py:503) + tied topk on CUDA"
     },
     "tmall_beh": null
+  },
+  "prespecified_ablations": {
+    "_comment": [
+      "Declared and committed BEFORE phase-1 results exist, which is the whole",
+      "point: an ablation added once the numbers are visible reads as damage",
+      "control, the same one added beforehand reads as design. Git history is",
+      "the evidence."
+    ],
+    "A1_rand": {
+      "declared_at": "2026-08-18",
+      "declared_before_phase1_results": true,
+      "question": "Does B1's gain come from transition semantics, or merely from the 2,752 extra free parameters it adds to the input layer?",
+      "why_not_a_behaviour_only_branch": "A0 already IS the behaviour-only branch: MBHT's forward() computes item_emb + position_embedding + type_embedding, which is Equation 1's e_j (+) p_j (+) b_j. B1 adds a fourth term on top, so A1-vs-A0 is already transition-pair against single-behaviour. A separate behaviour-only arm would just rebuild A0.",
+      "design": "Identical to A1 in every respect -- same |T| x hidden embedding, same lookup, same parameter count -- except the transition id at each valid position is drawn independently of the actual behaviours, so it carries no transition information. Deterministic per position (hash of (seed, row, position)) so the run stays reproducible.",
+      "must_not_do": "Do NOT implement this as a permutation of transition ids. An embedding table is permutation-invariant: relabelling which row each token uses leaves the model learning exactly the same function, so it controls for nothing. The correspondence between token and data is what has to break, not the labelling.",
+      "reading": "A1 > A1-rand: the gain comes from transition semantics. A1 ~ A1-rand: the gain is capacity alone, and the contribution is nil.",
+      "activation_condition": "Run ONLY if phase 1 shows A1 beating A0 under the go_criterion. With no gain there is nothing to attribute, and the runs would be wasted.",
+      "budget_if_activated": "1 seed on tmall_beh, ~10 GPU-hours, from the slack left after phase 1. Directional evidence for rebuttal, not a significance claim at n=1."
+    }
+  },
+  "published_reference": {
+    "source": "Yang et al., MBHT, KDD 2022 (arXiv 2207.05584), Table 2",
+    "verification": "Column order from PDF text extraction is not trustworthy on its own, so every Taobao figure was recomputed from the paper's own '# Improve' row against the best baseline in that column. All five matched to two decimals (HR@5 48.85 vs 48.84, NDCG@5 52.07, HR@10 26.96 vs 26.95, NDCG@10 50.53, MRR 47.19), which pins the ordering.",
+    "tmall_beh": {
+      "HR@5": 0.323,
+      "NDCG@5": 0.257,
+      "HR@10": 0.405,
+      "NDCG@10": 0.283,
+      "MRR": 0.262
+    },
+    "retail_beh_caveat": "The Retailrocket columns did NOT survive the same check -- extraction yields NDCG@5 > HR@5, which is impossible -- so their per-column mapping is unresolved. Gate 1's reproduction sits inside the published 0.93-0.95 band either way, so nothing depends on resolving it.",
+    "use": "Reference only. The go criterion compares A1 against our own A0 under an identical protocol, never against these numbers. Our Tmall runs use a reduced epoch budget and must be described as such, not presented as the authors' figures."
   }
 }
